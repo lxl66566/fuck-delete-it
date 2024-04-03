@@ -1,0 +1,14 @@
+[package]
+name = "fuck-delete-it"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fdl"
+path = "src/main.rs"
+
+[dependencies]
+dinvoke = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "dinvoke", version = "0.1.0" }
+data = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "data", version = "0.1.0" }
+bindings = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "bindings", version = "0.1.0" }
+clap = { version = "4.5.4", features = ["derive"] }
