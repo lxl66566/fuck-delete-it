@@ -19,10 +19,11 @@
   ```sh
   scoop install https://raw.githubusercontent.com/lxl66566/fuck-delete-it/main/fuck-delete-it.json
   ```
-- 使用 cargo：
+
+<!-- - 使用 cargo：
   ```sh
   cargo install fuck-delete-it
-  ```
+  ``` -->
 
 ## 使用
 

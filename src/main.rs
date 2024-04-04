@@ -35,7 +35,7 @@ use std::{fs, io, ptr};
 
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const OPEN_EXISTING: u32 = 3;
-const FILE_SHARE: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_00044;
+const FILE_SHARE: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004;
 const FILE_PROCESS_IDS_INFO: u32 = 47;
 
 #[allow(clippy::missing_safety_doc)]
