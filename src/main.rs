@@ -1,105 +1,72 @@
-// NOTICE file corresponding to the section 4 d of the Apache License,
-// Version 2.0
-
-// This product includes software developed at
-// https://github.com/Kudaes/Bin-Finder
-
-// Copyright [Year] [Kudaes]
-
-// This product includes software licensed under the Apache License, Version 2.0 (the "License").
-// You may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-
-// http://www.apache.org/licenses/LICENSE-2.0
-
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 //! test
 
 #[warn(clippy::nursery, clippy::cargo)]
 mod cli;
 
-use bindings::Windows::Win32::Foundation::HANDLE;
-use bindings::Windows::Win32::System::WindowsProgramming::IO_STATUS_BLOCK;
 use clap::Parser;
 use cli::Cli;
-use data::{CreateFile, FILE_PROCESS_IDS_USING_FILE_INFORMATION, PVOID};
-use std::mem::size_of;
 use std::path::Path;
 use std::process::Command;
-use std::{fs, io, ptr};
+use std::{fs, io};
+use windows::core::PCWSTR;
+use windows::Wdk::System::Threading::{
+    NtQueryInformationProcess, ProcessGroupInformation, ProcessHandleInformation,
+};
+use windows::Win32::Foundation::{NTSTATUS, STATUS_SUCCESS};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
+};
 
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const OPEN_EXISTING: u32 = 3;
 const FILE_SHARE: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004;
-const FILE_PROCESS_IDS_INFO: u32 = 47;
+// const FILE_PROCESS_IDS_INFO: u32 = 47;
 
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn get_pid_from_image_path(path: &str) -> Result<Vec<usize>, String> {
     let mut file: Vec<u16> = path.encode_utf16().collect();
     file.push(0);
-    let k32 = dinvoke::get_module_base_address("kernel32.dll");
-    let create_file: CreateFile;
-    let create_file_r: Option<HANDLE>;
 
-    dinvoke::dynamic_invoke!(
-        k32,
-        "CreateFileW",
-        create_file,
-        create_file_r,
-        file.as_ptr(),
+    let handle = CreateFileW(
+        PCWSTR(file.as_mut_ptr()),
         FILE_READ_ATTRIBUTES,
-        FILE_SHARE,
-        ptr::null(),
-        OPEN_EXISTING,
-        0,
-        HANDLE(0)
-    );
-
-    let file_handle = match create_file_r {
-        Some(handle) => handle,
-        None => return Err("Failed to create file handle".to_string()),
-    };
-
-    if file_handle.0 == -1 {
-        return Err("Invalid file handle".to_string());
-    }
+        FILE_SHARE_MODE(FILE_SHARE),
+        Some(std::ptr::null_mut()),
+        FILE_CREATION_DISPOSITION(OPEN_EXISTING),
+        FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    dbg!(handle);
 
     let mut buffer;
-    let mut bytes = size_of::<FILE_PROCESS_IDS_USING_FILE_INFORMATION>() as u32;
-    for _ in 0..20 {
+    let mut bytes = 400_u32;
+    let mut query_status: NTSTATUS = STATUS_SUCCESS;
+    for _ in 0..1 {
         buffer = vec![0u8; bytes as usize];
-        let ptr: PVOID = std::mem::transmute(buffer.as_ptr());
-        let ios: Vec<u8> = vec![0u8; size_of::<IO_STATUS_BLOCK>()];
-        let iosb: *mut IO_STATUS_BLOCK = std::mem::transmute(&ios);
+        let ptr = std::mem::transmute(buffer.as_ptr());
+        let mut returnlength: u32 = 0;
 
-        let x = dinvoke::nt_query_information_file(
-            file_handle,
-            iosb,
+        query_status = NtQueryInformationProcess(
+            handle,
+            ProcessHandleInformation,
             ptr,
             bytes,
-            FILE_PROCESS_IDS_INFO,
+            &mut returnlength,
         );
 
-        if x != 0 {
+        if query_status != STATUS_SUCCESS {
             bytes *= 2;
         } else {
-            let fpi: *mut FILE_PROCESS_IDS_USING_FILE_INFORMATION = std::mem::transmute(ptr);
-            let _r = dinvoke::close_handle(file_handle);
-            // Access denied error occurs if this pointer is not liberated.
-            (*iosb).Anonymous.Pointer = ptr::null_mut();
-            return Ok((*fpi)
-                .process_id_list
-                .into_iter()
-                .filter(|x| x > &4)
-                .collect());
+            let fpi: *mut Vec<usize> = std::mem::transmute(ptr);
+            let fpi_collect: Box<Vec<usize>> = Box::from_raw(fpi);
+            return Ok(fpi_collect.into_iter().filter(|x| x > &4).collect());
         }
     }
-    Err("Timeout. Call to NtQueryInformationFile failed.".to_string())
+    Err(format!(
+        "Call to NtQueryInformationProcess failed with status: {:X}",
+        query_status.0 as u32
+    ))
 }
 
 /// delete the given file/folder.
@@ -166,31 +133,34 @@ fn kill_process(pid: usize) -> std::io::Result<()> {
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
-    visit(cli.path.as_path(), &|path| unsafe {
-        if let Err(e) = std::fs::remove_file(path) {
-            eprint!("Failed to delete file {path:?}: {e} ");
-            let pid = get_pid_from_image_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
-            if cli.yes || yn_selector(&format!("Kill process with pid {pid:?}?"), true) {
-                for p in pid {
-                    kill_process(p)
-                        .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
-                }
-            }
-            let mut removed = Err(format!(
-                "Cannot delete file {} even if the occupying process has been killed.",
-                path.display()
-            ));
-            for _ in 0..10 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if std::fs::remove_file(path).is_ok() {
-                    removed = Ok(());
-                    break;
-                }
-            }
-            removed?;
-        }
-        println!("Deleted file {path:?}");
-        Ok(path)
-    })?;
+    unsafe {
+        dbg!("{:?}", get_pid_from_image_path(cli.path.to_str().unwrap()));
+    }
+    // visit(cli.path.as_path(), &|path| unsafe {
+    //     if let Err(e) = std::fs::remove_file(path) {
+    //         eprint!("Failed to delete file {path:?}: {e} ");
+    //         let pid = get_pid_from_image_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
+    //         if cli.yes || yn_selector(&format!("Kill process with pid {pid:?}?"), true) {
+    //             for p in pid {
+    //                 kill_process(p)
+    //                     .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
+    //             }
+    //         }
+    //         let mut removed = Err(format!(
+    //             "Cannot delete file {} even if the occupying process has been killed.",
+    //             path.display()
+    //         ));
+    //         for _ in 0..10 {
+    //             std::thread::sleep(std::time::Duration::from_millis(100));
+    //             if std::fs::remove_file(path).is_ok() {
+    //                 removed = Ok(());
+    //                 break;
+    //             }
+    //         }
+    //         removed?;
+    //     }
+    //     println!("Deleted file {path:?}");
+    //     Ok(path)
+    // })?;
     Ok(())
 }

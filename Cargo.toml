@@ -18,10 +18,18 @@ name = "fdi"
 path = "src/main.rs"
 
 [dependencies]
-dinvoke = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "dinvoke", version = "0.1.0" }
-data = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "data", version = "0.1.0" }
-bindings = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "bindings", version = "0.1.0" }
 clap = { version = "4.5.4", features = ["derive"] }
+dinvoke_rs = "0.1.4"
+
+[dependencies.windows]
+version = "0.53.0"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Wdk_System_SystemInformation",
+  "Wdk_System_Threading",
+]
 
 [profile.release]
 strip = true
