@@ -9,9 +9,6 @@ on:
       - v[0-9]+.*
   workflow_dispatch:
 
-env:
-  LITCRYPT_ENCRYPT_KEY: asdasd
-
 jobs:
   create-release:
     runs-on: ubuntu-latest

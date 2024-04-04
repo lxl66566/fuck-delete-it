@@ -19,16 +19,16 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
-dinvoke_rs = "0.1.4"
 
 [dependencies.windows]
-version = "0.53.0"
+version = "0.54.0"
 features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Wdk_System_SystemInformation",
-  "Wdk_System_Threading",
+  "Wdk_Storage_FileSystem",
+  "Win32_System_IO",
 ]
 
 [profile.release]

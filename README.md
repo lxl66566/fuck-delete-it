@@ -19,11 +19,10 @@ There are several different methods to install this program, and you can choose 
   ```sh
   scoop install https://raw.githubusercontent.com/lxl66566/fuck-delete-it/main/fuck-delete-it.json
   ```
-
-<!-- - Use cargo:
+- Use cargo:
   ```sh
   cargo install fuck-delete-it
-  ``` -->
+  ```
 
 ## Usage
 
