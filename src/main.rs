@@ -18,6 +18,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! test
+
+#[warn(clippy::nursery, clippy::cargo)]
 mod cli;
 
 use bindings::Windows::Win32::Foundation::HANDLE;
@@ -32,7 +35,7 @@ use std::{fs, io, ptr};
 
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const OPEN_EXISTING: u32 = 3;
-const FILE_SHARE: u32 = 0x00000001 | 0x00000002 | 0x00000004;
+const FILE_SHARE: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_00044;
 const FILE_PROCESS_IDS_INFO: u32 = 47;
 
 #[allow(clippy::missing_safety_doc)]
@@ -99,6 +102,7 @@ pub unsafe fn get_pid_from_image_path(path: &str) -> Result<Vec<usize>, String> 
     Err("Timeout. Call to NtQueryInformationFile failed.".to_string())
 }
 
+/// delete the given file/folder.
 fn visit<F>(path: &Path, cb: &F) -> std::io::Result<()>
 where
     F: Fn(&Path) -> Result<&Path, String>,
@@ -110,8 +114,9 @@ where
             visit(&path, cb)?;
         }
         fs::remove_dir(path)?;
-    } else if let Err(e) = cb(path) {
-        eprintln!("Error occurs when deleting {}: {}", &path.display(), e);
+    } else if let Err(reason) = cb(path) {
+        eprintln!("{reason}");
+        eprintln!("Error occurs when deleting {}.", &path.display());
     }
     Ok(())
 }
@@ -163,12 +168,12 @@ fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
     visit(cli.path.as_path(), &|path| unsafe {
         if let Err(e) = std::fs::remove_file(path) {
-            eprint!("Failed to delete file {:?}: {}, ", path, e);
+            eprint!("Failed to delete file {path:?}: {e} ");
             let pid = get_pid_from_image_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
-            if cli.yes || yn_selector(&format!("Kill process with pid {:?}?", pid), true) {
+            if cli.yes || yn_selector(&format!("Kill process with pid {pid:?}?"), true) {
                 for p in pid {
                     kill_process(p)
-                        .map_err(|e| format!("Failed to kill process with pid {}: {}", p, e))?;
+                        .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
                 }
             }
             let mut removed = Err(format!(
@@ -184,7 +189,7 @@ fn main() -> std::io::Result<()> {
             }
             removed?;
         }
-        println!("Deleted file {:?}", path);
+        println!("Deleted file {path:?}");
         Ok(path)
     })?;
     Ok(())

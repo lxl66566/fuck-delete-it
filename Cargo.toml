@@ -2,9 +2,19 @@
 name = "fuck-delete-it"
 version = "0.1.0"
 edition = "2021"
+authors = ["lxl66566 <lxl66566@gmail.com>"]
+license = "MIT OR Apache-2.0"
+keywords = ["delete", "windows"]
+readme = "README.md"
+repository = "https://github.com/lxl66566/fuck-delete-it"
+homepage = "https://github.com/lxl66566/fuck-delete-it"
+documentation = "https://github.com/lxl66566/fuck-delete-it"
+categories = ["filesystem"]
+description = "Force delete file/folder on Windows, kill occupying processes."
+
 
 [[bin]]
-name = "fdl"
+name = "fdi"
 path = "src/main.rs"
 
 [dependencies]
@@ -12,3 +22,9 @@ dinvoke = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "dinvoke
 data = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "data", version = "0.1.0" }
 bindings = { git = "https://github.com/Kudaes/Bin-Finder.git", package = "bindings", version = "0.1.0" }
 clap = { version = "4.5.4", features = ["derive"] }
+
+[profile.release]
+strip = true
+lto = true
+panic = "abort"
+opt-level = "z"
