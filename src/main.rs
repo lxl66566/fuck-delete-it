@@ -40,8 +40,7 @@ fn remove_any(path: &Path) -> io::Result<()> {
 
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn get_pid_from_image_path(path: &str) -> Result<Vec<usize>, String> {
-    let mut file: Vec<u16> = path.encode_utf16().collect();
-    file.push(0);
+    let mut file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
     let handle = CreateFileW(
         PCWSTR(file.as_mut_ptr()),

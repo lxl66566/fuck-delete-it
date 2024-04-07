@@ -3,7 +3,7 @@ name = "fuck-delete-it"
 version = "0.1.0"
 edition = "2021"
 authors = ["lxl66566 <lxl66566@gmail.com>"]
-license = "MIT OR Apache-2.0"
+license = "MIT"
 keywords = ["delete", "windows"]
 readme = "README.md"
 repository = "https://github.com/lxl66566/fuck-delete-it"
@@ -30,6 +30,9 @@ features = [
   "Wdk_Storage_FileSystem",
   "Win32_System_IO",
 ]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
 
 [profile.release]
 strip = true
