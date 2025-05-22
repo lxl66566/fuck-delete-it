@@ -6,9 +6,12 @@ mod cli;
 
 use clap::Parser;
 use cli::Cli;
+use inquire::Confirm;
 use std::mem::size_of;
 use std::path::Path;
 use std::process::Command;
+use std::thread::sleep;
+use std::time::Duration;
 use std::{fs, io, ptr};
 use windows::core::PCWSTR;
 use windows::Wdk::Storage::FileSystem::{
@@ -58,7 +61,7 @@ pub unsafe fn get_pid_from_image_path(path: &str) -> Result<Vec<usize>, String> 
     let mut query_status: NTSTATUS = STATUS_SUCCESS;
     for _ in 0..20 {
         buffer = vec![0u8; bytes as usize];
-        let ptr = std::mem::transmute(buffer.as_ptr());
+        let ptr = std::mem::transmute::<*const u8, *mut std::ffi::c_void>(buffer.as_ptr());
         let mut ios: Vec<u8> = vec![0u8; size_of::<IO_STATUS_BLOCK>()];
         let iosb: *mut IO_STATUS_BLOCK = ios.as_mut_ptr() as *mut _;
 
@@ -104,32 +107,6 @@ where
     Ok(())
 }
 
-fn get_user_input() -> String {
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read line");
-    input.trim().to_lowercase()
-}
-
-fn yn_selector(message: &str, default: bool) -> bool {
-    println!(
-        "{} ({}/{}): ",
-        message,
-        if default { "Y" } else { "y" },
-        if !default { "N" } else { "n" }
-    );
-    loop {
-        let input = get_user_input();
-        match input.as_str() {
-            "" => return default,
-            "y" | "yes" => return true,
-            "n" | "no" => return false,
-            _ => print!("Invalid input. Please enter 'y' or 'n' :"),
-        }
-    }
-}
-
 #[cfg(windows)]
 fn kill_process(pid: usize) -> std::io::Result<()> {
     let _ = Command::new("taskkill")
@@ -148,26 +125,34 @@ fn kill_process(pid: usize) -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     visit(cli.path.as_path(), &|path| unsafe {
         if let Err(e) = remove_any(path) {
             eprint!("Failed to delete file {path:?}: {e} ");
             let pid = get_pid_from_image_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
-            if cli.yes || yn_selector(&format!("Kill process with pid {pid:?}?"), true) {
+            if cli.yes
+                || Confirm::new(&format!("Kill process with pid {pid:?}?"))
+                    .with_default(true)
+                    .prompt()
+                    .map_err(|e| e.to_string())?
+            {
                 for p in pid {
                     kill_process(p)
                         .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
                 }
+                sleep(Duration::from_millis(50)); // wait for the process to be killed.
+                remove_any(path).map_err(|_| {
+                    format!(
+                        "Cannot delete file {} even if the occupying process has been killed.",
+                        path.display()
+                    )
+                })?;
+                println!("Deleted file {path:?}");
+            } else {
+                eprintln!("Skipped deleting file {path:?}");
             }
-            remove_any(path).map_err(|_| {
-                format!(
-                    "Cannot delete file {} even if the occupying process has been killed.",
-                    path.display()
-                )
-            })?
         }
-        println!("Deleted file {path:?}");
         Ok(path)
     })?;
     Ok(())
