@@ -1,6 +1,6 @@
 [package]
 name = "fuck-delete-it"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["lxl66566 <lxl66566@gmail.com>"]
 license = "MIT"
@@ -19,7 +19,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-inquire = "0.7.5"
+inquire = "0.7"
+winreg = "0.55"
 
 [dependencies.windows]
 version = "0.61"

@@ -7,6 +7,7 @@ mod cli;
 use clap::Parser;
 use cli::Cli;
 use inquire::Confirm;
+use std::env;
 use std::mem::size_of;
 use std::path::Path;
 use std::process::Command;
@@ -22,6 +23,8 @@ use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
+use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_WRITE};
+use winreg::RegKey;
 
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const OPEN_EXISTING: u32 = 3;
@@ -125,35 +128,106 @@ fn kill_process(pid: usize) -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let cli = Cli::parse();
-    visit(cli.path.as_path(), &|path| unsafe {
-        if let Err(e) = remove_any(path) {
-            eprint!("Failed to delete file {path:?}: {e} ");
-            let pid = get_pid_from_image_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
-            if cli.yes
-                || Confirm::new(&format!("Kill process with pid {pid:?}?"))
-                    .with_default(true)
-                    .prompt()
-                    .map_err(|e| e.to_string())?
-            {
-                for p in pid {
-                    kill_process(p)
-                        .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
+fn add_context_menu_entry() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let current_exe = env::current_exe()?;
+    let exe_path = current_exe.to_str().ok_or("Invalid executable path")?;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let classes_key = hkcu
+        .open_subkey_with_flags("Software\\Classes", KEY_WRITE)
+        .or_else(|_| hkcu.create_subkey("Software\\Classes").map(|x| x.0))?;
+
+    // For files (only for current user)
+    let (key, _) = classes_key.create_subkey("*\\shell\\FUCK, DELETE IT!\\command")?;
+    key.set_value("", &format!("\"{}\" \"%1\"", exe_path))?;
+    println!("Added context menu entry for files.");
+
+    // For folders (only for current user)
+    let (key, _) = classes_key.create_subkey("Directory\\shell\\FUCK, DELETE IT!\\command")?;
+    key.set_value("", &format!("\"{}\" \"%1\"", exe_path))?;
+    println!("Added context menu entry for directories.");
+
+    Ok(())
+}
+
+fn remove_context_menu_entry() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let classes_key = hkcu.open_subkey("Software\\Classes")?;
+
+    let key_paths = ["*\\shell", "Directory\\shell"];
+    for key_path in key_paths {
+        match classes_key.open_subkey_with_flags(key_path, KEY_ALL_ACCESS) {
+            Ok(shell_key) => match shell_key.delete_subkey_all("FUCK, DELETE IT!") {
+                Ok(_) => {
+                    println!("Removed context menu entry for files.");
                 }
-                sleep(Duration::from_millis(50)); // wait for the process to be killed.
-                remove_any(path).map_err(|_| {
-                    format!(
-                        "Cannot delete file {} even if the occupying process has been killed.",
-                        path.display()
-                    )
-                })?;
-                println!("Deleted file {path:?}");
-            } else {
-                eprintln!("Skipped deleting file {path:?}");
+                Err(e) => {
+                    if e.raw_os_error() == Some(2) {
+                        println!("Context menu entry for files not found (already removed or never existed).");
+                    } else {
+                        eprintln!("Error removing file context menu entry: {}", e);
+                    }
+                }
+            },
+            Err(e) => {
+                if e.raw_os_error() == Some(2) {
+                    println!(
+                        "Parent key `{}` for files not found, entry likely doesn't exist.",
+                        key_path
+                    );
+                } else {
+                    eprintln!("Error opening {} key: {}", key_path, e);
+                }
             }
         }
-        Ok(path)
-    })?;
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cli = Cli::parse();
+    if cli.uninstall {
+        remove_context_menu_entry()?;
+        println!("Context menu entries removed.");
+        let _ = Command::new("cmd").args(["/C", "pause"]).status();
+        return Ok(());
+    }
+    if let Some(path) = cli.path.as_ref() {
+        visit(path, &|path| unsafe {
+            if let Err(e) = remove_any(path) {
+                eprintln!("Failed to delete file {path:?}: {e} ");
+                let pid =
+                    get_pid_from_image_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
+                if cli.yes
+                    || Confirm::new(&format!("Kill process with pid {pid:?}?"))
+                        .with_default(true)
+                        .prompt()
+                        .map_err(|e| e.to_string())?
+                {
+                    for p in pid {
+                        kill_process(p)
+                            .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
+                    }
+                    sleep(Duration::from_millis(50)); // wait for the process to be killed.
+                    remove_any(path).map_err(|_| {
+                        format!(
+                            "Cannot delete file {} even if the occupying process has been killed.",
+                            path.display()
+                        )
+                    })?;
+                    println!("Deleted file {path:?}");
+                } else {
+                    eprintln!("Skipped deleting file {path:?}");
+                }
+            }
+            Ok(path)
+        })?;
+    } else {
+        // No arguments provided, add context menu entry
+        add_context_menu_entry()?;
+        println!("Context menu entries added. You can now right-click on files/folders to use the program.");
+        let _ = Command::new("cmd").args(["/C", "pause"]).status();
+    }
+
     Ok(())
 }

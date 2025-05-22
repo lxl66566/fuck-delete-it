@@ -3,6 +3,7 @@ on:
   push:
     tags:
       - "v*"
+
 jobs:
   release:
     runs-on: ${{ matrix.os }}
@@ -11,8 +12,8 @@ jobs:
         os: [windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: test build rust project
-        uses: lxl66566/rust-simple-release@0.2.5
+      - name: release
+        uses: lxl66566/rust-simple-release@v0.2.5
         with:
           targets: |
             x86_64-pc-windows-msvc
