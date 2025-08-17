@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: release
-        uses: lxl66566/rust-simple-release@v0.2.5
+        uses: lxl66566/rust-simple-release@main
         with:
           targets: |
             x86_64-pc-windows-msvc
