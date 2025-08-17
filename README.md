@@ -27,7 +27,7 @@ After installation, simply run the program, and it will add the `FUCK, DELETE IT
 You can also use the command line to delete:
 
 ```sh
-fdi [PATH] [-y] [-u]
+fdi [PATH...] [-y] [-u]
 ```
 
 Alternatively, you can directly drag the file/folder into the command line window, and the path will be automatically filled in.

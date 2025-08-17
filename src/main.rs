@@ -277,11 +277,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = Command::new("cmd").args(["/C", "pause"]).status();
         return Ok(());
     }
-    if let Some(path) = cli.path.as_ref() {
+    if cli.path.is_empty() {
+        // No arguments provided, add context menu entry
+        add_context_menu_entry()?;
+        println!("Context menu entries added. You can now right-click on files/folders to use the program.");
+        let _ = Command::new("cmd").args(["/C", "pause"]).status();
+    }
+    for path in cli.path {
         assert!(path.exists(), "Path does not exist");
         let confirm = cli.yes
             || Confirm::new(&format!(
-                "Are you sure you want to delete it? The {} cannot be recovered.",
+                "Are you sure you want to delete {path:?}? The {} cannot be recovered.",
                 if path.is_dir() { "folder" } else { "file" }
             ))
             .with_default(true)
@@ -289,7 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if !confirm {
             return Ok(());
         }
-        visit(path, &|path| unsafe {
+        visit(path.as_path(), &|path| unsafe {
             if let Err(e) = remove_any(path) {
                 eprintln!("Failed to delete file {path:?}: {e} ");
                 if e.kind() == io::ErrorKind::PermissionDenied {
@@ -327,12 +333,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             Ok(path)
         })?;
-    } else {
-        // No arguments provided, add context menu entry
-        add_context_menu_entry()?;
-        println!("Context menu entries added. You can now right-click on files/folders to use the program.");
-        let _ = Command::new("cmd").args(["/C", "pause"]).status();
     }
-
     Ok(())
 }
