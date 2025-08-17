@@ -1,16 +1,16 @@
 [package]
-name = "fuck-delete-it"
-version = "0.2.1"
-edition = "2021"
-authors = ["lxl66566 <lxl66566@gmail.com>"]
-license = "MIT"
-keywords = ["delete", "windows"]
-readme = "README.md"
-repository = "https://github.com/lxl66566/fuck-delete-it"
-homepage = "https://github.com/lxl66566/fuck-delete-it"
+authors       = ["lxl66566 <lxl66566@gmail.com>"]
+categories    = ["filesystem"]
+description   = "Force delete file/folder on Windows, kill occupying processes."
 documentation = "https://github.com/lxl66566/fuck-delete-it"
-categories = ["filesystem"]
-description = "Force delete file/folder on Windows, kill occupying processes."
+edition       = "2021"
+homepage      = "https://github.com/lxl66566/fuck-delete-it"
+keywords      = ["delete", "windows"]
+license       = "MIT"
+name          = "fuck-delete-it"
+readme        = "README.md"
+repository    = "https://github.com/lxl66566/fuck-delete-it"
+version       = "0.2.1"
 
 
 [[bin]]
@@ -18,26 +18,25 @@ name = "fdi"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap    = { version = "4.5", features = ["derive"] }
 inquire = "0.7"
-winreg = "0.55"
+winreg  = "0.55"
 
 [dependencies.windows]
-version = "0.61"
 features = [
+  "Win32_System_IO",
+  "Win32_System_Threading",
+  "Win32_System_ProcessStatus",
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Wdk_System_SystemInformation",
   "Wdk_Storage_FileSystem",
-  "Win32_System_IO",
 ]
-
-[package.metadata.docs.rs]
-default-target = "x86_64-pc-windows-msvc"
+version = "0.61"
 
 [profile.release]
-strip = true
-lto = true
-panic = "abort"
+lto       = true
 opt-level = "z"
+panic     = "abort"
+strip     = true

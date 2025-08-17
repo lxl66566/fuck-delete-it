@@ -22,6 +22,8 @@ use windows::Win32::Foundation::{CloseHandle, NTSTATUS, STATUS_SUCCESS};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
 };
+use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleBaseNameW};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_WRITE};
 use winreg::RegKey;
@@ -36,6 +38,18 @@ struct FileProcessIdsUsingFileInformation {
     pub process_id_list: [usize; 400],
 }
 
+#[derive(Debug, Clone)]
+pub struct ProcessInfo {
+    pub pid: usize,
+    pub name: String,
+}
+
+impl std::fmt::Display for ProcessInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 fn remove_any(path: &Path) -> io::Result<()> {
     if path.is_file() {
         fs::remove_file(path)
@@ -44,8 +58,57 @@ fn remove_any(path: &Path) -> io::Result<()> {
     }
 }
 
+/// 通过进程ID获取进程名称
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn get_pid_from_file_path(path: &str) -> Result<Vec<usize>, String> {
+unsafe fn get_process_name_by_pid(pid: u32) -> Option<String> {
+    // 打开目标进程
+    let process_handle = match OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
+    {
+        Ok(handle) => handle,
+        Err(_) => return None,
+    };
+
+    if process_handle.is_invalid() {
+        return None;
+    }
+
+    let mut module_handles: [windows::Win32::Foundation::HMODULE; 1024] = std::mem::zeroed();
+    let mut cb_needed = 0;
+
+    // 枚举进程模块
+    if EnumProcessModules(
+        process_handle,
+        module_handles.as_mut_ptr(),
+        size_of::<[windows::Win32::Foundation::HMODULE; 1024]>() as u32,
+        &mut cb_needed,
+    )
+    .is_err()
+    {
+        CloseHandle(process_handle).ok();
+        return None;
+    }
+
+    let mut module_name_buffer: [u16; 256] = [0; 256];
+    // 获取第一个模块（即可执行文件）的名称
+    let name_len = GetModuleBaseNameW(
+        process_handle,
+        Some(module_handles[0]),
+        &mut module_name_buffer,
+    );
+
+    CloseHandle(process_handle).ok();
+
+    if name_len == 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(
+        &module_name_buffer[..name_len as usize],
+    ))
+}
+
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn get_process_info_from_file_path(path: &str) -> Result<Vec<ProcessInfo>, String> {
     let mut file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
     let handle = CreateFileW(
@@ -80,11 +143,23 @@ pub unsafe fn get_pid_from_file_path(path: &str) -> Result<Vec<usize>, String> {
         // Access denied error occurs if this pointer is not liberated.
         (*iosb).Anonymous.Pointer = ptr::null_mut();
         CloseHandle(handle).map_err(|e| e.to_string())?;
-        return Ok((*fpi)
+
+        // 获取PID列表并附加上进程名称
+        let pids_with_names = (*fpi)
             .process_id_list
             .into_iter()
             .filter(|&x| x > 40 && x < (1_usize << 20))
-            .collect());
+            .map(|pid| {
+                let process_name =
+                    get_process_name_by_pid(pid as u32).unwrap_or_else(|| "<Unknown>".to_string());
+                ProcessInfo {
+                    pid,
+                    name: process_name,
+                }
+            })
+            .collect();
+
+        return Ok(pids_with_names);
     }
     Err(format!(
         "Call to NtQueryInformationProcess failed with status: {:X}",
@@ -207,17 +282,22 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         visit(path, &|path| unsafe {
             if let Err(e) = remove_any(path) {
                 eprintln!("Failed to delete file {path:?}: {e} ");
-                let pid =
-                    get_pid_from_file_path(path.to_str().ok_or("Not a valid utf-8 filename.")?)?;
+                let pinfos = get_process_info_from_file_path(
+                    path.to_str().ok_or("Not a valid utf-8 filename.")?,
+                )?;
                 if cli.yes
-                    || Confirm::new(&format!("Kill process with pid {pid:?}?"))
+                    || Confirm::new(&format!("Kill processes:\n{pinfos:#?}?"))
                         .with_default(true)
                         .prompt()
                         .map_err(|e| e.to_string())?
                 {
-                    for p in pid {
-                        kill_process(p)
-                            .map_err(|e| format!("Failed to kill process with pid {p}: {e}"))?;
+                    for pinfo in pinfos {
+                        kill_process(pinfo.pid).map_err(|e| {
+                            format!(
+                                "Failed to kill process `{}` [{}]: {e}",
+                                pinfo.name, pinfo.pid
+                            )
+                        })?;
                     }
                     sleep(Duration::from_millis(50)); // wait for the process to be killed.
                     remove_any(path).map_err(|_| {
