@@ -23,7 +23,9 @@ use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
 };
 use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleBaseNameW};
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+use windows::Win32::System::Threading::{
+    OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
+};
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_WRITE};
 use winreg::RegKey;
@@ -186,21 +188,29 @@ where
 }
 
 #[cfg(windows)]
-fn kill_process(pid: usize) -> std::io::Result<()> {
-    let _ = Command::new("taskkill")
-        .arg("/F")
-        .arg("/PID")
-        .arg(pid.to_string())
-        .status()?;
+unsafe fn kill_process(pid: usize) -> std::io::Result<()> {
+    // 1. 获取目标进程的句柄。
+    let process_handle = match OpenProcess(PROCESS_TERMINATE, false, pid as u32) {
+        Ok(handle) => {
+            // 检查句柄是否有效。虽然 `Ok` 通常意味着有效，但多一层保险没有坏处。
+            if handle.is_invalid() {
+                return Err(io::Error::last_os_error());
+            }
+            handle
+        }
+        Err(e) => {
+            return Err(io::Error::other(e));
+        }
+    };
 
-    // no need to print status because the `taskkill` will status it as well.
-    // if status.success() {
-    //     println!("Successfully killed process with pid {}", pid);
-    // } else {
-    //     eprintln!("Failed to kill process with pid {}", pid);
-    // }
+    // 2. 使用获取到的句柄来终止进程。
+    let result = TerminateProcess(process_handle, 1);
 
-    Ok(())
+    CloseHandle(process_handle)?;
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(io::Error::other(e)),
+    }
 }
 
 fn add_context_menu_entry() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -282,6 +292,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         visit(path, &|path| unsafe {
             if let Err(e) = remove_any(path) {
                 eprintln!("Failed to delete file {path:?}: {e} ");
+                if e.kind() == io::ErrorKind::PermissionDenied {
+                    eprintln!("Permission denied, skipping...");
+                    return Ok(path);
+                }
                 let pinfos = get_process_info_from_file_path(
                     path.to_str().ok_or("Not a valid utf-8 filename.")?,
                 )?;
@@ -299,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             )
                         })?;
                     }
-                    sleep(Duration::from_millis(50)); // wait for the process to be killed.
+                    sleep(Duration::from_millis(20)); // wait for the process to be killed.
                     remove_any(path).map_err(|_| {
                         format!(
                             "Cannot delete file {} even if the occupying process has been killed.",
