@@ -350,10 +350,7 @@ fn remove_context_menu_entry() -> Result<()> {
 }
 
 /// Wait for a key press, but only when this process is the sole owner of the
-/// console — i.e. launched from Explorer's context menu or a shortcut, where
-/// the window would otherwise vanish before the output can be read.
-/// When launched from an existing terminal, other processes share the console
-/// and we return immediately.
+/// console — i.e. launched from Explorer's context menu or a shortcut
 fn pause() {
     let mut list = [0u32; 2];
     // SAFETY: `list` is a valid buffer matching the slice length.
@@ -407,7 +404,6 @@ fn main() -> Result<()> {
         }
         all_deleted &= remove_tree(path, &|path| delete_one(path, cli.yes));
     }
-    pause();
     if !all_deleted {
         std::process::exit(1);
     }
