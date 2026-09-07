@@ -206,22 +206,34 @@ fn parse_process_ids(buffer: &[u8]) -> Option<Vec<u32>> {
     Some(list.iter().map(|&pid| pid as u32).collect())
 }
 
-/// delete the given file/folder.
-fn visit<F>(path: &Path, remove_fun: &F) -> std::io::Result<()>
+/// Delete the given file/folder, post-order.
+/// Returns whether everything under `path` was deleted successfully;
+/// a failure on one entry does not abort the remaining ones.
+fn visit<F>(path: &Path, remove_fun: &F) -> bool
 where
-    F: Fn(&Path) -> Result<&Path, String>,
+    F: Fn(&Path) -> bool,
 {
+    let mut ok = true;
     if path.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
-            visit(&path, remove_fun)?;
+        match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => ok &= visit(&entry.path(), remove_fun),
+                        Err(e) => {
+                            eprintln!("Failed to read dir entry in {}: {e}", path.display());
+                            ok = false;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read dir {}: {e}", path.display());
+                ok = false;
+            }
         }
     }
-    if let Err(reason) = remove_fun(path) {
-        eprintln!("{reason}\nError occurs when deleting {}.", &path.display());
-    }
-    Ok(())
+    remove_fun(path) & ok
 }
 
 #[cfg(windows)]
@@ -321,8 +333,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("Context menu entries added. You can now right-click on files/folders to use the program.");
         let _ = Command::new("cmd").args(["/C", "pause"]).status();
     }
+    let mut all_deleted = true;
     for path in cli.path {
-        assert!(path.exists(), "Path does not exist");
+        if !path.exists() {
+            eprintln!("Path does not exist: {}", path.display());
+            all_deleted = false;
+            continue;
+        }
         let confirm = cli.yes
             || Confirm::new(&format!(
                 "Are you sure you want to delete {path:?}? The {} cannot be recovered.",
@@ -331,45 +348,69 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .with_default(true)
             .prompt()?;
         if !confirm {
-            return Ok(());
+            eprintln!("Skipped {path:?}");
+            continue;
         }
-        visit(path.as_path(), &|path| unsafe {
+        all_deleted &= visit(path.as_path(), &|path| unsafe {
             if let Err(e) = remove_any(path) {
-                eprintln!("Failed to delete file {path:?}: {e} ");
+                eprintln!("Failed to delete {path:?}: {e}");
                 if e.kind() == io::ErrorKind::PermissionDenied {
                     eprintln!("Permission denied, skipping...");
-                    return Ok(path);
+                    return false;
                 }
-                let pinfos = get_process_info_from_file_path(path)?;
-                if cli.yes
-                    || Confirm::new(&format!("Kill processes:\n{pinfos:#?}?"))
+                let pinfos = match get_process_info_from_file_path(path) {
+                    Ok(pinfos) => pinfos,
+                    Err(e) => {
+                        eprintln!("Error occurs when deleting {}: {e}", path.display());
+                        return false;
+                    }
+                };
+                let kill = cli.yes
+                    || match Confirm::new(&format!("Kill processes:\n{pinfos:#?}?"))
                         .with_default(true)
                         .prompt()
-                        .map_err(|e| e.to_string())?
-                {
-                    for pinfo in pinfos {
-                        kill_process(pinfo.pid).map_err(|e| {
-                            format!(
-                                "Failed to kill process `{}` [{}]: {e}",
-                                pinfo.name, pinfo.pid
-                            )
-                        })?;
-                    }
-                    sleep(Duration::from_millis(20)); // wait for the process to
-                                                      // be killed.
-                    remove_any(path).map_err(|_| {
-                        format!(
-                            "Cannot delete file {} even if the occupying process has been killed.",
-                            path.display()
-                        )
-                    })?;
-                    println!("Deleted file {path:?}");
-                } else {
-                    eprintln!("Skipped deleting file {path:?}");
+                    {
+                        Ok(kill) => kill,
+                        Err(e) => {
+                            eprintln!("{e}");
+                            return false;
+                        }
+                    };
+                if !kill {
+                    eprintln!("Skipped deleting {path:?}");
+                    return false;
                 }
+                for pinfo in pinfos {
+                    if let Err(e) = kill_process(pinfo.pid) {
+                        eprintln!(
+                            "Failed to kill process `{}` [{}]: {e}",
+                            pinfo.name, pinfo.pid
+                        );
+                        return false;
+                    }
+                }
+                sleep(Duration::from_millis(20)); // wait for the process to be
+                                                  // killed.
+                match remove_any(path) {
+                    Ok(()) => {
+                        println!("Deleted file {path:?}");
+                        true
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "Cannot delete {} even if the occupying process has been killed.",
+                            path.display()
+                        );
+                        false
+                    }
+                }
+            } else {
+                true
             }
-            Ok(path)
-        })?;
+        });
+    }
+    if !all_deleted {
+        std::process::exit(1);
     }
     Ok(())
 }
