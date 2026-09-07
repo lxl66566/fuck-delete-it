@@ -1,7 +1,6 @@
 //! Kill all processes occupying a file/folder, and enforce deletion.
 //! [Inspired by](https://t.me/withabsolutex/1537)
 
-#![warn(clippy::nursery, clippy::cargo)]
 mod cli;
 
 use std::{
@@ -200,7 +199,7 @@ fn delete_one(path: &Path, yes: bool) -> bool {
             Err(e) => {
                 eprintln!("Error occurs when deleting {}: {e:#}", path.display());
                 return false;
-            }
+            },
         };
         let list: String = pinfos
             .iter()
@@ -215,7 +214,7 @@ fn delete_one(path: &Path, yes: bool) -> bool {
                 Err(e) => {
                     eprintln!("{e}");
                     return false;
-                }
+                },
             };
         if !kill {
             eprintln!("Skipped deleting {path:?}");
@@ -271,14 +270,14 @@ fn remove_tree(path: &Path, delete_one: &dyn Fn(&Path) -> bool) -> bool {
                         Err(e) => {
                             eprintln!("Failed to read dir entry in {}: {e}", path.display());
                             ok = false;
-                        }
+                        },
                     }
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Failed to read dir {}: {e}", path.display());
                 ok = false;
-            }
+            },
         }
     }
     delete_one(path) & ok
@@ -335,14 +334,15 @@ fn remove_context_menu_entry() -> Result<()> {
                 Ok(()) => println!("Removed context menu entry for {desc}."),
                 Err(e) if e.raw_os_error() == not_found => {
                     println!(
-                        "Context menu entry for {desc} not found (already removed or never existed)."
+                        "Context menu entry for {desc} not found (already removed or never \
+                         existed)."
                     );
-                }
+                },
                 Err(e) => eprintln!("Error removing context menu entry for {desc}: {e}"),
             },
             Err(e) if e.raw_os_error() == not_found => {
                 println!("Parent key `{key_path}` not found, entry likely doesn't exist.");
-            }
+            },
             Err(e) => eprintln!("Error opening {key_path} key: {e}"),
         }
     }
@@ -375,7 +375,8 @@ fn main() -> Result<()> {
         // No arguments provided, add context menu entry
         add_context_menu_entry()?;
         println!(
-            "Context menu entries added. You can now right-click on files/folders to use the program."
+            "Context menu entries added. You can now right-click on files/folders to use the \
+             program."
         );
         pause();
         return Ok(());
@@ -392,7 +393,11 @@ fn main() -> Result<()> {
             || Confirm::new(&format!(
                 "Are you sure you want to delete {}? The {} cannot be recovered.",
                 path.display(),
-                if path.is_dir() { "folder" } else { "file" }
+                if path.is_dir() {
+                    "folder"
+                } else {
+                    "file"
+                }
             ))
             .with_default(true)
             .prompt()?;
@@ -452,7 +457,7 @@ mod tests {
     fn parse_ignores_trailing_slack() {
         // The retry loop may hand us an oversized buffer.
         let mut buf = pack(1, &[42]);
-        buf.extend_from_slice(&[0xAA; 24]);
+        buf.extend_from_slice(&[0xaa; 24]);
         assert_eq!(parse_process_ids(&buf), Some(vec![42]));
     }
 }
