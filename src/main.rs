@@ -29,8 +29,8 @@ use windows::{
         System::{
             ProcessStatus::{EnumProcessModules, GetModuleBaseNameW},
             Threading::{
-                OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
-                PROCESS_VM_READ,
+                OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_INFORMATION,
+                PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
             },
             IO::IO_STATUS_BLOCK,
         },
@@ -238,29 +238,20 @@ where
 
 #[cfg(windows)]
 unsafe fn kill_process(pid: u32) -> std::io::Result<()> {
-    // 1. 获取目标进程的句柄。
-    let process_handle = match OpenProcess(PROCESS_TERMINATE, false, pid) {
-        Ok(handle) => {
-            // 检查句柄是否有效。虽然 `Ok`
-            // 通常意味着有效，但多一层保险没有坏处。
-            if handle.is_invalid() {
-                return Err(io::Error::last_os_error());
-            }
-            handle
-        }
-        Err(e) => {
-            return Err(io::Error::other(e));
-        }
-    };
+    // Open with PROCESS_SYNCHRONIZE so we can wait for the actual exit.
+    let process_handle = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid)
+        .map_err(io::Error::other)?;
 
-    // 2. 使用获取到的句柄来终止进程。
     let result = TerminateProcess(process_handle, 1);
 
-    CloseHandle(process_handle)?;
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => Err(io::Error::other(e)),
+    // TerminateProcess is asynchronous: wait (bounded) for the real exit so
+    // the file handles are released before we retry the deletion.
+    if result.is_ok() {
+        let _ = WaitForSingleObject(process_handle, 5000);
     }
+
+    CloseHandle(process_handle)?;
+    result.map_err(io::Error::other)
 }
 
 fn add_context_menu_entry() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -389,20 +380,27 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         return false;
                     }
                 }
-                sleep(Duration::from_millis(20)); // wait for the process to be
-                                                  // killed.
-                match remove_any(path) {
-                    Ok(()) => {
-                        println!("Deleted file {path:?}");
-                        true
+                // Handles may take a brief moment to be released even after
+                // the processes have exited, so retry a few times.
+                let mut deleted = false;
+                for attempt in 0..3 {
+                    if remove_any(path).is_ok() {
+                        deleted = true;
+                        break;
                     }
-                    Err(_) => {
-                        eprintln!(
-                            "Cannot delete {} even if the occupying process has been killed.",
-                            path.display()
-                        );
-                        false
+                    if attempt < 2 {
+                        sleep(Duration::from_millis(50));
                     }
+                }
+                if deleted {
+                    println!("Deleted file {path:?}");
+                    true
+                } else {
+                    eprintln!(
+                        "Cannot delete {} even if the occupying process has been killed.",
+                        path.display()
+                    );
+                    false
                 }
             } else {
                 true
