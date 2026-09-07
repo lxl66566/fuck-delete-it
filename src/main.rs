@@ -7,6 +7,7 @@ mod cli;
 use std::{
     env, fs, io,
     mem::{offset_of, size_of},
+    os::windows::ffi::OsStrExt,
     path::Path,
     process::Command,
     ptr,
@@ -122,8 +123,12 @@ unsafe fn get_process_name_by_pid(pid: u32) -> Option<String> {
 }
 
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn get_process_info_from_file_path(path: &str) -> Result<Vec<ProcessInfo>, String> {
-    let mut file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+pub unsafe fn get_process_info_from_file_path(path: &Path) -> Result<Vec<ProcessInfo>, String> {
+    let mut file: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
     let handle = CreateFileW(
         PCWSTR(file.as_mut_ptr()),
@@ -335,9 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     eprintln!("Permission denied, skipping...");
                     return Ok(path);
                 }
-                let pinfos = get_process_info_from_file_path(
-                    path.to_str().ok_or("Not a valid utf-8 filename.")?,
-                )?;
+                let pinfos = get_process_info_from_file_path(path)?;
                 if cli.yes
                     || Confirm::new(&format!("Kill processes:\n{pinfos:#?}?"))
                         .with_default(true)
