@@ -4,45 +4,57 @@
 #![warn(clippy::nursery, clippy::cargo)]
 mod cli;
 
+use std::{
+    env, fs, io,
+    mem::{offset_of, size_of},
+    path::Path,
+    process::Command,
+    ptr,
+    thread::sleep,
+    time::Duration,
+};
+
 use clap::Parser;
 use cli::Cli;
 use inquire::Confirm;
-use std::env;
-use std::mem::size_of;
-use std::path::Path;
-use std::process::Command;
-use std::thread::sleep;
-use std::time::Duration;
-use std::{fs, io, ptr};
-use windows::core::PCWSTR;
-use windows::Wdk::Storage::FileSystem::{
-    FileProcessIdsUsingFileInformation, NtQueryInformationFile,
+use windows::{
+    core::PCWSTR,
+    Wdk::Storage::FileSystem::{FileProcessIdsUsingFileInformation, NtQueryInformationFile},
+    Win32::{
+        Foundation::{CloseHandle, HANDLE, STATUS_SUCCESS},
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
+        },
+        System::{
+            ProcessStatus::{EnumProcessModules, GetModuleBaseNameW},
+            Threading::{
+                OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
+                PROCESS_VM_READ,
+            },
+            IO::IO_STATUS_BLOCK,
+        },
+    },
 };
-use windows::Win32::Foundation::{CloseHandle, NTSTATUS, STATUS_SUCCESS};
-use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
+use winreg::{
+    enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_WRITE},
+    RegKey,
 };
-use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleBaseNameW};
-use windows::Win32::System::Threading::{
-    OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
-};
-use windows::Win32::System::IO::IO_STATUS_BLOCK;
-use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_WRITE};
-use winreg::RegKey;
 
 const FILE_READ_ATTRIBUTES: u32 = 0x80;
 const OPEN_EXISTING: u32 = 3;
 const FILE_SHARE: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004;
 
-#[allow(dead_code)]
+/// Variable-length struct: `process_id_list` actually holds
+/// `number_of_process_ids_in_list` entries.
+#[repr(C)]
 struct FileProcessIdsUsingFileInformation {
-    pub number_of_process_ids_in_list: u32,
-    pub process_id_list: [usize; 400],
+    number_of_process_ids_in_list: u32,
+    process_id_list: [usize; 1],
 }
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
-    pub pid: usize,
+    pub pid: u32,
     pub name: String,
 }
 
@@ -124,49 +136,69 @@ pub unsafe fn get_process_info_from_file_path(path: &str) -> Result<Vec<ProcessI
     )
     .map_err(|e| e.to_string())?;
 
-    let mut buffer;
+    let result = query_processes_using_file(handle);
+    // Close in every path so the handle is not leaked when the query fails.
+    CloseHandle(handle).map_err(|e| e.to_string())?;
+    result
+}
+
+/// Upper bound for the query buffer; the pid list never needs more than this.
+const MAX_QUERY_BUFFER: u32 = 1 << 20;
+
+#[allow(clippy::missing_safety_doc)]
+unsafe fn query_processes_using_file(handle: HANDLE) -> Result<Vec<ProcessInfo>, String> {
+    let mut iosb: IO_STATUS_BLOCK = std::mem::zeroed();
     let mut bytes = size_of::<FileProcessIdsUsingFileInformation>() as u32;
-    let mut query_status: NTSTATUS = STATUS_SUCCESS;
-    for _ in 0..20 {
-        buffer = vec![0u8; bytes as usize];
-        let ptr = std::mem::transmute::<*const u8, *mut std::ffi::c_void>(buffer.as_ptr());
-        let mut ios: Vec<u8> = vec![0u8; size_of::<IO_STATUS_BLOCK>()];
-        let iosb: *mut IO_STATUS_BLOCK = ios.as_mut_ptr() as *mut _;
+    loop {
+        let mut buffer = vec![0u8; bytes as usize];
+        let status = NtQueryInformationFile(
+            handle,
+            &mut iosb,
+            buffer.as_mut_ptr().cast(),
+            bytes,
+            FileProcessIdsUsingFileInformation,
+        );
+        // NtQueryInformationFile leaves the transfer size in the iosb union
+        // (Pointer field); Clear it, or CloseHandle fails with access denied.
+        iosb.Anonymous.Pointer = ptr::null_mut();
 
-        query_status =
-            NtQueryInformationFile(handle, iosb, ptr, bytes, FileProcessIdsUsingFileInformation);
-
-        if query_status != STATUS_SUCCESS {
+        if status != STATUS_SUCCESS {
+            if bytes >= MAX_QUERY_BUFFER {
+                return Err(format!(
+                    "NtQueryInformationFile failed with status: {:X}",
+                    status.0 as u32
+                ));
+            }
             bytes *= 2;
             continue;
         }
 
-        let fpi: *mut FileProcessIdsUsingFileInformation = std::mem::transmute(ptr);
-        // Access denied error occurs if this pointer is not liberated.
-        (*iosb).Anonymous.Pointer = ptr::null_mut();
-        CloseHandle(handle).map_err(|e| e.to_string())?;
-
-        // 获取PID列表并附加上进程名称
-        let pids_with_names = (*fpi)
-            .process_id_list
+        let pids = parse_process_ids(&buffer)
+            .ok_or("Pid count reported by the query exceeds the buffer size")?;
+        return Ok(pids
             .into_iter()
-            .filter(|&x| x > 40 && x < (1_usize << 20))
-            .map(|pid| {
-                let process_name =
-                    get_process_name_by_pid(pid as u32).unwrap_or_else(|| "<Unknown>".to_string());
-                ProcessInfo {
-                    pid,
-                    name: process_name,
-                }
+            .map(|pid| ProcessInfo {
+                pid,
+                name: get_process_name_by_pid(pid).unwrap_or_else(|| "<Unknown>".to_string()),
             })
-            .collect();
-
-        return Ok(pids_with_names);
+            .collect());
     }
-    Err(format!(
-        "Call to NtQueryInformationProcess failed with status: {:X}",
-        query_status.0 as u32
-    ))
+}
+
+/// Extract the pid list from a `FileProcessIdsUsingFileInformation` buffer.
+/// Returns `None` if the reported count does not fit in the buffer.
+fn parse_process_ids(buffer: &[u8]) -> Option<Vec<u32>> {
+    let offset = offset_of!(FileProcessIdsUsingFileInformation, process_id_list);
+    // SAFETY: the struct is trivially readable from any sufficiently long,
+    // aligned-free byte buffer (plain integers, no invalid representations).
+    let info = unsafe { &*(buffer.as_ptr() as *const FileProcessIdsUsingFileInformation) };
+    let count = info.number_of_process_ids_in_list as usize;
+    if buffer.len() < offset + count * size_of::<usize>() {
+        return None;
+    }
+    // SAFETY: `count` entries were just verified to fit in the buffer.
+    let list = unsafe { std::slice::from_raw_parts(info.process_id_list.as_ptr(), count) };
+    Some(list.iter().map(|&pid| pid as u32).collect())
 }
 
 /// delete the given file/folder.
@@ -188,11 +220,12 @@ where
 }
 
 #[cfg(windows)]
-unsafe fn kill_process(pid: usize) -> std::io::Result<()> {
+unsafe fn kill_process(pid: u32) -> std::io::Result<()> {
     // 1. 获取目标进程的句柄。
-    let process_handle = match OpenProcess(PROCESS_TERMINATE, false, pid as u32) {
+    let process_handle = match OpenProcess(PROCESS_TERMINATE, false, pid) {
         Ok(handle) => {
-            // 检查句柄是否有效。虽然 `Ok` 通常意味着有效，但多一层保险没有坏处。
+            // 检查句柄是否有效。虽然 `Ok`
+            // 通常意味着有效，但多一层保险没有坏处。
             if handle.is_invalid() {
                 return Err(io::Error::last_os_error());
             }
@@ -319,7 +352,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             )
                         })?;
                     }
-                    sleep(Duration::from_millis(20)); // wait for the process to be killed.
+                    sleep(Duration::from_millis(20)); // wait for the process to
+                                                      // be killed.
                     remove_any(path).map_err(|_| {
                         format!(
                             "Cannot delete file {} even if the occupying process has been killed.",
