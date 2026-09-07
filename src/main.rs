@@ -27,6 +27,7 @@ use windows::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION, FILE_SHARE_MODE,
         },
         System::{
+            Console::GetConsoleProcessList,
             ProcessStatus::{EnumProcessModules, GetModuleBaseNameW},
             Threading::{
                 OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_INFORMATION,
@@ -310,19 +311,34 @@ fn remove_context_menu_entry() -> Result<(), Box<dyn std::error::Error + Send + 
     Ok(())
 }
 
+/// Wait for a key press, but only when this process is the sole owner of the
+/// console — i.e. launched from Explorer's context menu or a shortcut, where
+/// the window would otherwise vanish before the output can be read.
+/// When launched from an existing terminal, other processes share the console
+/// and we return immediately.
+fn pause() {
+    let mut list = [0u32; 2];
+    // SAFETY: `list` is a valid, writable buffer matching the slice length.
+    let count = unsafe { GetConsoleProcessList(&mut list) };
+    if count == 1 {
+        let _ = Command::new("cmd").args(["/C", "pause"]).status();
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     if cli.uninstall {
         remove_context_menu_entry()?;
         println!("Context menu entries removed.");
-        let _ = Command::new("cmd").args(["/C", "pause"]).status();
+        pause();
         return Ok(());
     }
     if cli.path.is_empty() {
         // No arguments provided, add context menu entry
         add_context_menu_entry()?;
         println!("Context menu entries added. You can now right-click on files/folders to use the program.");
-        let _ = Command::new("cmd").args(["/C", "pause"]).status();
+        pause();
+        return Ok(());
     }
     let mut all_deleted = true;
     for path in cli.path {
@@ -407,6 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         });
     }
+    pause();
     if !all_deleted {
         std::process::exit(1);
     }
