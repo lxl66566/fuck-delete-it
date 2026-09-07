@@ -9,6 +9,6 @@ pub struct Cli {
     #[arg(short, long)]
     pub yes: bool,
     /// Remove context menu entry.
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "path")]
     pub uninstall: bool,
 }
