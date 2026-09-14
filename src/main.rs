@@ -417,6 +417,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let all_deleted = match run(&cli) {
+        Ok(all_deleted) => all_deleted,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            false
+        },
+    };
+    if !all_deleted {
+        // Keep the console window open (when launched from Explorer) so the
+        // error output is readable; a successful run exits without pausing.
+        pause();
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Delete all `cli.paths` after confirmation. Returns whether everything was
+/// deleted successfully; a failure on one entry does not abort the remaining.
+fn run(cli: &Cli) -> Result<bool> {
     let mut all_deleted = true;
     for path in &cli.paths {
         if !path.exists() {
@@ -442,10 +461,7 @@ fn main() -> Result<()> {
         }
         all_deleted &= remove_tree(path, &|path| delete_one(path, cli.yes));
     }
-    if !all_deleted {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(all_deleted)
 }
 
 #[cfg(test)]
