@@ -23,7 +23,7 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, STATUS_SUCCESS},
         Storage::FileSystem::{
-            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         },
         System::{
@@ -113,7 +113,10 @@ fn processes_using_file(path: &Path) -> Result<Vec<ProcessInfo>> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            // FILE_FLAG_BACKUP_SEMANTICS is required to open directories
+            // (found empirically: without it CreateFileW fails with access
+            // denied on directories, so occupied folders could never be deleted).
+            FILE_FLAG_BACKUP_SEMANTICS,
             None,
         )
         .with_context(|| format!("Cannot open {}", path.display()))?;
