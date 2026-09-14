@@ -21,7 +21,7 @@ use inquire::Confirm;
 use windows::{
     Wdk::Storage::FileSystem::{FileProcessIdsUsingFileInformation, NtQueryInformationFile},
     Win32::{
-        Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, STATUS_SUCCESS},
+        Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, STATUS_SUCCESS, WAIT_OBJECT_0},
         Storage::FileSystem::{
             CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -188,22 +188,37 @@ fn parse_process_ids(buffer: &[u8]) -> Option<Vec<u32>> {
     Some(list.iter().map(|&pid| pid as u32).collect())
 }
 
-/// Delete a single file/dir; on errors other than permission denial, find and
-/// kill the occupying processes (after confirmation unless `yes`), then retry.
+/// Delete a single file/dir; on failure find the occupying processes, kill
+/// them (after confirmation unless `yes`), then retry.
 fn delete_one(path: &Path, yes: bool) -> bool {
     if let Err(e) = remove_any(path) {
         eprintln!("Failed to delete {path:?}: {e}");
-        if e.kind() == io::ErrorKind::PermissionDenied {
-            eprintln!("Permission denied, skipping...");
-            return false;
-        }
-        let pinfos = match processes_using_file(path) {
-            Ok(pinfos) => pinfos,
+        // Defensive: the query currently excludes our own pid, but never kill
+        // ourselves even if that ever changes.
+        let pinfos: Vec<_> = match processes_using_file(path) {
+            Ok(pinfos) => pinfos
+                .into_iter()
+                .filter(|p| p.pid != std::process::id())
+                .collect(),
             Err(e) => {
-                eprintln!("Error occurs when deleting {}: {e:#}", path.display());
+                eprintln!("Error querying processes using {}: {e:#}", path.display());
                 return false;
             },
         };
+        if pinfos.is_empty() {
+            // The lock may be gone by now (e.g. a transient AV scan), or the
+            // holder keeps the file mapped without an open handle, which the
+            // query cannot see. Retry once before giving up.
+            if remove_any(path).is_ok() {
+                println!("Deleted {path:?}");
+                return true;
+            }
+            eprintln!(
+                "No process is holding {} open; cannot delete.",
+                path.display()
+            );
+            return false;
+        }
         let list: String = pinfos
             .iter()
             .map(|p| format!("  {} ({})\n", p.name, p.pid))
@@ -223,13 +238,16 @@ fn delete_one(path: &Path, yes: bool) -> bool {
             eprintln!("Skipped deleting {path:?}");
             return false;
         }
+        // Killing one process may fail (e.g. elevated targets); continue with
+        // the rest and still retry the deletion.
+        let mut unkilled: Vec<&ProcessInfo> = Vec::new();
         for pinfo in &pinfos {
             if let Err(e) = kill_process(pinfo.pid) {
                 eprintln!(
                     "Failed to kill process `{}` [{}]: {e:#}",
                     pinfo.name, pinfo.pid
                 );
-                return false;
+                unkilled.push(pinfo);
             }
         }
         // Handles may take a brief moment to be released even after the
@@ -246,14 +264,25 @@ fn delete_one(path: &Path, yes: bool) -> bool {
         }
         if deleted {
             println!("Deleted {path:?}");
-            true
-        } else {
+            return true;
+        }
+        if unkilled.is_empty() {
             eprintln!(
                 "Cannot delete {} even if the occupying process has been killed.",
                 path.display()
             );
-            false
+        } else {
+            eprintln!(
+                "Cannot delete {}: failed to kill {}. Try running fdi as administrator.",
+                path.display(),
+                unkilled
+                    .iter()
+                    .map(|p| format!("{} [{}]", p.name, p.pid))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
+        false
     } else {
         true
     }
@@ -293,14 +322,20 @@ fn kill_process(pid: u32) -> Result<()> {
         // Open with PROCESS_SYNCHRONIZE so we can wait for the actual exit.
         let handle = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid)
             .with_context(|| format!("OpenProcess({pid}) failed"))?;
-        let result = TerminateProcess(handle, 1);
-        if result.is_ok() {
-            // TerminateProcess is asynchronous: wait (bounded to 5s) for the
-            // real exit so the file handles are released before we retry.
-            let _ = WaitForSingleObject(handle, 5000);
-        }
+        let terminate = TerminateProcess(handle, 1);
+        // TerminateProcess is asynchronous: wait (bounded to 5s) for the real
+        // exit so the file handles are released before we retry. If the
+        // termination itself failed there is nothing to wait for.
+        let wait = if terminate.is_ok() {
+            WaitForSingleObject(handle, 5000)
+        } else {
+            WAIT_OBJECT_0
+        };
         let close = CloseHandle(handle);
-        result.with_context(|| format!("TerminateProcess({pid}) failed"))?;
+        terminate.with_context(|| format!("TerminateProcess({pid}) failed"))?;
+        if wait != WAIT_OBJECT_0 {
+            bail!("Process {pid} did not exit within 5s");
+        }
         close.with_context(|| format!("CloseHandle({pid}) failed"))?;
         Ok(())
     }
